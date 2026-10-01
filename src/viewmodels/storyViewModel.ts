@@ -7,7 +7,8 @@ import {
   type StoryDocument,
   type StoryScene,
 } from '../models/story';
-import { getStats, getTimelineWarning, orderedScenes, validateName } from '../models/storyRules';
+import { getStats, getTimelineWarning, insertSceneAt, orderedScenes, validateName } from '../models/storyRules';
+import type { SceneInsertMode } from '../models/storyRules';
 import type { StoryRepository } from '../repositories/storyRepository';
 
 export type ViewModelStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed';
@@ -18,6 +19,8 @@ export interface StoryViewState {
   stats: ReturnType<typeof getStats>;
   notice: string;
   error: string;
+  insertWarning: string;
+  sceneFocusNonce: number;
   search: string;
   activeSection: 'overview' | 'characters' | 'clues';
 }
@@ -31,6 +34,8 @@ export class StoryViewModel {
     stats: { characters: 0, scenes: 0, clues: 0, unresolvedClues: 0, completion: 0 },
     notice: '',
     error: '',
+    insertWarning: '',
+    sceneFocusNonce: 0,
     search: '',
     activeSection: 'overview',
   };
@@ -103,6 +108,54 @@ export class StoryViewModel {
     };
     this.updateStory((current) => ({ ...current, scenes: [...current.scenes, scene], selectedSceneId: scene.id }));
     this.setState({ notice: `已创建场景「${scene.title}」` });
+  }
+
+  /** v2 项目专用：在选定位置插入新场景，并让作者直接落到新场景上开始写 */
+  insertScene(
+    title: string,
+    summary: string,
+    options: { mode: SceneInsertMode; anchorSceneId?: string; payoffClueId?: string },
+  ): void {
+    // v1 老项目不感知插入位置：一律按原来的方式追加到时间线末尾
+    if (this.requireStory().version < 2) {
+      this.addScene(title, summary);
+      return;
+    }
+    const cleanTitle = validateName(title);
+    if (cleanTitle === '至少输入 2 个字') {
+      this.setState({ notice: cleanTitle });
+      return;
+    }
+    const story = this.requireStory();
+    const scene: StoryScene = {
+      id: createId('scene'),
+      title: cleanTitle,
+      order: story.scenes.length + 1,
+      summary: summary.trim() || '还没有写下这一幕发生了什么。',
+      conflict: '',
+      characterIds: [],
+      clueIds: [],
+    };
+    const result = insertSceneAt(story, {
+      scene,
+      mode: options.mode,
+      anchorSceneId: options.anchorSceneId,
+      payoffClueId: options.payoffClueId || undefined,
+    });
+    if (!result.inserted) {
+      this.setState({ insertWarning: result.warning ?? '插入位置无效，请重新选择。' });
+      return;
+    }
+    this.updateStory(() => ({ ...result.story, selectedSceneId: scene.id }));
+    this.setState({
+      insertWarning: '',
+      sceneFocusNonce: this.state.sceneFocusNonce + 1,
+      notice: `已在时间线中插入场景「${scene.title}」`,
+    });
+  }
+
+  clearInsertWarning(): void {
+    if (this.state.insertWarning) this.setState({ insertWarning: '' });
   }
 
   updateScene(sceneId: string, patch: Partial<Pick<StoryScene, 'title' | 'summary' | 'conflict'>>): void {
@@ -183,6 +236,17 @@ export class StoryViewModel {
   get timelineWarning(): string | null {
     const story = this.state.story;
     return story ? getTimelineWarning(story) : null;
+  }
+
+  /** 仅 v2 项目支持新建时选择插入位置；v1 老项目保持一律追加到末尾 */
+  get supportsSceneInsertion(): boolean {
+    return (this.state.story?.version ?? 1) >= 2;
+  }
+
+  get unresolvedClues() {
+    const story = this.state.story;
+    if (!story) return [];
+    return story.clues.filter((clue) => clue.payoffSceneId === '');
   }
 
   private requireStory(): StoryDocument {

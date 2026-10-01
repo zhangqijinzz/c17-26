@@ -1,5 +1,9 @@
 export type StoryStatus = 'draft' | 'complete';
 
+// v1：老项目，新建场景一律追加到时间线末尾；v2：支持在新建时选择插入位置
+export type StoryVersion = 1 | 2;
+export const CURRENT_STORY_VERSION: StoryVersion = 2;
+
 export interface StoryCharacter {
   id: string;
   name: string;
@@ -25,7 +29,7 @@ export interface StoryClue {
 }
 
 export interface StoryDocument {
-  version: 1;
+  version: StoryVersion;
   id: string;
   title: string;
   status: StoryStatus;
@@ -55,7 +59,7 @@ export function createStarterStory(): StoryDocument {
   const oldHarborId = 'scene-old-harbor';
   const firstLetterId = 'clue-first-letter';
   return {
-    version: 1,
+    version: CURRENT_STORY_VERSION,
     id: 'story-last-lighthouse',
     title: '最后的灯塔',
     status: 'draft',
