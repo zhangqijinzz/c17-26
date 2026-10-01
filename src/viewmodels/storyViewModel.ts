@@ -7,7 +7,16 @@ import {
   type StoryDocument,
   type StoryScene,
 } from '../models/story';
-import { getStats, getTimelineWarning, orderedScenes, validateName } from '../models/storyRules';
+import {
+  describeClueOrderIssue,
+  getStats,
+  getTimelineWarning,
+  insertSceneAt,
+  orderedScenes,
+  planSceneInsert,
+  validateName,
+  type ScenePlacement,
+} from '../models/storyRules';
 import type { StoryRepository } from '../repositories/storyRepository';
 
 export type ViewModelStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed';
@@ -17,6 +26,7 @@ export interface StoryViewState {
   story: StoryDocument | null;
   stats: ReturnType<typeof getStats>;
   notice: string;
+  noticeTone: 'info' | 'warning';
   error: string;
   search: string;
   activeSection: 'overview' | 'characters' | 'clues';
@@ -30,6 +40,7 @@ export class StoryViewModel {
     story: null,
     stats: { characters: 0, scenes: 0, clues: 0, unresolvedClues: 0, completion: 0 },
     notice: '',
+    noticeTone: 'info',
     error: '',
     search: '',
     activeSection: 'overview',
@@ -103,6 +114,44 @@ export class StoryViewModel {
     };
     this.updateStory((current) => ({ ...current, scenes: [...current.scenes, scene], selectedSceneId: scene.id }));
     this.setState({ notice: `已创建场景「${scene.title}」` });
+  }
+
+  /**
+   * 在指定位置新建场景：插入后所有场景重新连续编号。
+   * 若插入会导致某条伏笔的回收不晚于埋下，则不执行插入并当场提醒。
+   */
+  insertScene(title: string, summary: string, placement: ScenePlacement): boolean {
+    const cleanTitle = validateName(title);
+    if (cleanTitle === '至少输入 2 个字') {
+      this.notify(cleanTitle);
+      return false;
+    }
+    const story = this.requireStory();
+    const orderedSceneList = orderedScenes(story);
+    const plan = planSceneInsert(story, placement);
+    if (plan.index < 0) {
+      this.notify('没有找到插入位置所参照的场景，请重新选择位置。', 'warning');
+      return false;
+    }
+    if (plan.issues.length > 0) {
+      const detail = plan.issues.slice(0, 3).map(describeClueOrderIssue).join('；');
+      const suffix = plan.issues.length > 3 ? '等' : '';
+      this.notify(`没有插入：${detail}${suffix}，先后顺序说不通，请先调整伏笔或场景顺序。`, 'warning');
+      return false;
+    }
+    const scene: StoryScene = {
+      id: createId('scene'),
+      title: cleanTitle,
+      order: plan.index + 1,
+      summary: summary.trim() || '还没有写下这一幕发生了什么。',
+      conflict: '',
+      characterIds: [],
+      clueIds: [],
+    };
+    const scenes = insertSceneAt(orderedSceneList, scene, plan.index);
+    this.updateStory((current) => ({ ...current, scenes, selectedSceneId: scene.id }));
+    this.notify(`已在第 ${scene.order} 幕插入「${scene.title}」，后续场景编号已顺延`);
+    return true;
   }
 
   updateScene(sceneId: string, patch: Partial<Pick<StoryScene, 'title' | 'summary' | 'conflict'>>): void {
@@ -188,6 +237,10 @@ export class StoryViewModel {
   private requireStory(): StoryDocument {
     if (!this.state.story) throw new Error('故事尚未初始化');
     return this.state.story;
+  }
+
+  private notify(notice: string, noticeTone: 'info' | 'warning' = 'info'): void {
+    this.setState({ notice, noticeTone });
   }
 
   private updateStory(updater: (story: StoryDocument) => StoryDocument, showEditing = true): void {
